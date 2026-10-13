@@ -1,0 +1,27 @@
+# IntelliJ IDEA / PyCharm
+.idea/
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables and secrets
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -10,6 +10,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
 
+[project.optional-dependencies]
+# Структурное преобразование RTF/DOCX/PDF (python -m llm_wiki.ingest). PDF-конвейеру дополнительно
+# нужны docling-slim[models-local] и локальные веса моделей; они не объявлены и не проверены.
+ingest = ["docling-slim[format-docx,format-pdf]==2.138.0"]
+
 [tool.setuptools]
 packages = ["llm_wiki"]
 include-package-data = false

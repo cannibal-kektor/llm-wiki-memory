@@ -1,113 +1,126 @@
-# LLM Wiki Memory — Architecture
+# LLM Wiki Memory — архитектура
 
-**Status:** PoC design agreed in discussion; components described here are *planned*, not implemented.
-**Baseline:** 2026-10-13 design handoff. Revalidate assumptions against the real `ai-assistant` branch and available source contracts before integrating.
+**Статус:** текущая реализация ограничена извлечением из одного разрешённого TXT и предпросмотром. Остальные компоненты ниже — согласованное направление проектирования, **не реализованные API**. Основа решений — обсуждение от 2026-10-13; перед интеграцией перепроверять реальную ветку `ai-assistant` и контракты источников.
 
-## 1. Problem and objective
+## 1. Задача и границы
 
-The existing legal assistant uses Elasticsearch plus PostgreSQL/pgvector to find original documents, then a local LLM builds answers. Large acts, cross-document references, exceptions, and revisions can make retrieval incomplete. The **unproven hypothesis** is that a source-grounded thematic Wiki can reveal additional relevant original legal provisions.
+Существующий юридический помощник использует Elasticsearch и PostgreSQL/pgvector для поиска оригиналов, затем локальную LLM для ответа. Крупные акты, ссылки, исключения и редакции могут затруднять полноту поиска. **Неподтверждённая гипотеза:** тематическая Wiki с проверяемым происхождением поможет находить дополнительные релевантные положения оригиналов. Измерять нужно поиск исходных положений, а не привлекательность сгенерированного ответа.
 
-LLM Wiki is derived knowledge, not legal authority or a replacement for the source corpus. The offline PoC must measure whether Wiki-assisted retrieval helps, without altering production RAG.
+Wiki — производная навигация, не юридический первоисточник и не замена корпуса. Онлайн-RAG не меняется до автономной оценки и отдельного разрешения.
 
-## 2. Scope and explicit non-goals
+Объём всего PoC: извлечение, происхождение, разрешение кандидатов в страницы, ограниченные предложения консолидации, проверки, предпросмотр, публикация Markdown/Git после одобрения, qmd и сравнение поиска. За пределами начального PoC: переписывание `ai-assistant`, обслуживание конечных пользователей, полноценный процесс юридической экспертизы, автоматическое установление юридической истины, графовая БД, Kafka/Redis, новое каноническое SQL-хранилище, оригинальные PDF/DOCX в Wiki Git, несколько писателей и универсальные агентные каркасы.
 
-**In scope:** offline extraction of atomic claims; source-grounded provenance; candidate page resolution; constrained consolidation proposals; deterministic validation; inspectable dry-run; Markdown/Git publication after review; qmd retrieval; later controlled comparison with baseline retrieval.
-
-**Out of scope for the first PoC:** rewriting `ai-assistant`, serving end users, full legal-review workflow, automatic legal verification, a graph database, Kafka/Redis, new canonical SQL storage, storing original PDF/DOCX in Wiki Git, multiple concurrent writers, and general-purpose agent frameworks.
-
-## 3. Logical flow
+## 2. Реализованный поток
 
 ```text
-Approved synthetic inputs (initially) / existing source corpus (later, read-only)
-    -> Source adapter: exact text + available document/revision identifiers
-    -> Section/claim preparation: preserve headings, scope, and citation offsets
-    -> LLM extractor: atomic claim proposals + direct source quotations
-    -> Deterministic source/quote validation
-    -> Candidate resolver: exact IDs/aliases + current-batch changes + later qmd top-K
-    -> LLM consolidator: action + semantic relation + proposed edit
-    -> Proposal validator: provenance, scope, IDs, references, safe paths
-    -> Staging / dry-run (no published Wiki writes)
-    -> [explicit approval/review] one sequential Git writer
-    -> Wiki Markdown Git commit/push -> qmd update/embed -> index-ready snapshot
-    -> Offline retrieval evaluation against existing ES + pgvector
-    -> [only with evidence and approval] opt-in ai-assistant integration
+Один полный разрешённый UTF-8 TXT (до 65 536 байт)
+  → явные --approved-source и --dry-run, проверка ID/конфигурации/ввода
+  → промпт из ресурса пакета + динамическая схема/лимиты Python
+  → один локальный Chat Completions POST
+  → строгий JSON (1–32 кандидата)
+  → точный ID, дословная цитата, уточнения внутри цитаты
+  → консольный предпросмотр, без сохранения и публикации
 ```
 
-These are **logical responsibilities**, not a mandatory one-class/one-file or microservice-per-step design.
+`domain.py` содержит неизменяемые записи; `validation.py` — лимиты, строгую схему, детерминированные ID и проверки происхождения; CLI — чтение байтов и вывод; `llm.py` — конфигурацию, загрузку промпта, HTTP и проверку оболочки. Полный промпт находится в `llm_wiki/prompts/legal_extraction_ru.txt`, включается в wheel и загружается через `importlib.resources`. Неправильный ресурс останавливает запрос до HTTP; числовые лимиты и динамический пример схемы остаются в Python.
 
-## 4. Storage and ownership
+Оригинальные байты не меняются: SHA-256 идентифицирует их снимок, не юридическую редакцию. Смещения — символы Unicode от нуля, первое вхождение цитаты. Неизвестные редакция/раздел не выдумываются. Нет парсера, чанков, диапазонов строк, обработки пакета документов, сохранения результатов или записи Wiki.
 
-| Component | Role | Canonical? |
+**PASS означает лишь корректную структуру и буквальное происхождение возвращённых кандидатов.** Все они НЕПРОВЕРЕННЫЕ; смысл, полнота, юридическая эквивалентность, действительность и официальный статус не установлены. KYT содержит больше самостоятельных положений, чем предел 32; достижение предела может означать пропуски, а недостижение не доказывает полноту. Отсылки к недоступным актам остаются неразрешёнными.
+
+Только явные локальные/частные IP, без DNS, прокси, перенаправлений, неявных повторов и резервного провайдера. `--approved-source` подтверждает разрешение на обработку выбранным сервисом; не заменяет проверку прав, конфиденциальности, хранения/журналирования и защиты транспорта. Разрешение на публикацию исходника — отдельное. Вывод терминала содержит цитаты.
+
+## 3. Будущий полный поток
+
+```text
+Разрешённые источники / корпус с доступом только для чтения
+  → адаптер: точный текст и известная идентичность документа/редакции
+  → преобразование PDF/DOCX и юридическая иерархия, исходные позиции
+  → понимание документа: определения, исключения, ссылки
+  → Context Builder: выбор связанных положений
+  → извлечение типизированных кандидатов и проверка происхождения
+  → разрешение страниц: ID/алиасы → текущий пакет → qmd
+  → Consolidator/Proposer: действие, отношение, предлагаемое изменение
+  → ограниченный цикл проверок и исправлений
+  → staging / предпросмотр
+  → явная проверка человеком и одобрение
+  → один последовательный писатель Git
+  → публикация Markdown → qmd опубликованного снимка
+  → автономное сравнение поиска ES/pgvector и поиска с Wiki
+```
+
+Это логические обязанности, не требование создавать по классу, файлу или микросервису на каждый шаг.
+
+Ближайшее улучшение доказательств: заранее присваивать структурным фрагментам идентификаторы, позволить LLM ссылаться на них, а точный текст получать Python-кодом из источника. Несколько положений в доказательстве одного утверждения допустимы только после явного изменения доменного контракта. Наличие evidence не доказывает правильность интерпретации. Сейчас это **не реализовано**: модель возвращает непрерывную дословную цитату.
+
+Большие документы в будущем потребуют преобразования PDF/DOCX, юридической иерархии (главы/статьи/пункты/подпункты), точных исходных позиций, проверяемой идентичности редакции, перекрёстных ссылок, определений и исключений. Context Builder выбирает связанные положения; до консолидации нужен проход понимания документа. Этот этап не следует подменять обрезкой длинного TXT.
+
+## 4. Хранение и ответственность
+
+| Компонент | Роль | Каноничность |
 | --- | --- | --- |
-| Original legal document store | Original text/structure/revisions, when available; read-only to this project | Canonical for legal source text |
-| Wiki Markdown Git repository | Published thematic pages, stable claims, references, and revision history of derived content | Canonical for **published Wiki** |
-| Local staging/progress journal | Proposed changes, review state, batch/publish checkpoints; recoverable | Operational state, not published legal knowledge |
-| qmd (local SQLite index) | Full-text/semantic Wiki retrieval; rebuilt from a published Git snapshot | No |
-| Obsidian (optional) | Human browsing of Markdown and links | No |
+| Хранилище юридических оригиналов | Текст, структура и доступные редакции; проект только читает | Первоисточник юридического текста |
+| Отдельный Git-репозиторий Markdown Wiki | Опубликованные темы, утверждения, ссылки, история производного содержания | Каноническое опубликованное состояние Wiki |
+| Локальный staging/журнал прогресса | Предложения, рассмотрение, точки восстановления | Рабочее состояние, не опубликованные знания |
+| qmd, локальный SQLite-индекс | Полнотекстовый/семантический поиск по опубликованному снимку | Восстанавливаемый производный индекс |
+| Obsidian, необязательно | Просмотр Markdown и ссылок человеком | Не каноническое хранилище |
 
-The Wiki Git repository is distinct from the application code repository. Keep source documents and confidential Wiki data in an approved private environment; never use a public repository for restricted data.
+Wiki Git отделён от репозитория кода. Оригиналы и конфиденциальная Wiki должны оставаться в одобренной частной среде. Публичный репозиторий не подходит для ограниченных данных. Каталог `text/` предназначен для отдельно предоставленных локальных документов, игнорируется Git и не поставляется с кодом. Реальные TXT исключены из индекса без изменения исходных байтов.
 
-## 5. Domain contracts to refine before implementation
+## 5. Будущие доменные контракты
 
-Proposed conceptual records (not existing Python APIs or confirmed source-DB columns):
+Концептуальные записи, не подтверждённые столбцы БД и не обещание уже существующих Python API:
 
-- `Source`: stable `document_id`, full text, and **optional** revision/section/span data only if the source actually provides it.
-- `Claim`: stable ID, atomic statement, verbatim supporting quote, source identity, conditions, exceptions, scope, and known time/jurisdiction fields.
-- `WikiPage`: stable page ID, title, aliases, linked claims, sources, related page IDs, publication/review status.
-- `Proposal`: action, target page (if applicable), candidate claim, relation, rationale, and `requires_review` flag.
-- `Batch`: stable input identity, stage, expected Git base SHA, publication SHA and indexing SHA when relevant.
+- `Source`: стабильный `document_id`, точный текст, редакция/раздел/диапазон только при наличии в источнике.
+- `Claim`: стабильный ID, атомарное утверждение, дословное доказательство, происхождение, условия, исключения, область применения, известные даты/юрисдикция.
+- `WikiPage`: ID, заголовок, алиасы, утверждения, источники, связанные страницы, статус рассмотрения/публикации.
+- `Proposal`: действие, целевая страница, кандидат, отношение, обоснование, `requires_review`.
+- `Batch`: идентичность входа, этап, ожидаемый базовый Git SHA, SHA публикации и индексации.
 
-Consolidation actions:
-
-| Action | Meaning |
+| Действие | Смысл |
 | --- | --- |
-| `CREATE_PAGE` | Candidate topic has no suitable existing page; stage a new one |
-| `UPDATE_PAGE` | Add an independent rule, qualification, or exception to an existing page |
-| `ADD_SOURCE` | Add provenance for a genuinely equivalent rule; no duplicate claim text |
-| `NO_CHANGE` | Already-processed input/revision/extraction gives no effective change |
-| `REVIEW_REQUIRED` | Ambiguous, conflicting, unsupported, or invalid proposal; do not publish |
+| `CREATE_PAGE` | Нет подходящей страницы; предложить новую |
+| `UPDATE_PAGE` | Добавить самостоятельную норму, ограничение или исключение |
+| `ADD_SOURCE` | Добавить происхождение действительно эквивалентной нормы без дублирования |
+| `NO_CHANGE` | Повторная обработка не даёт фактического изменения |
+| `REVIEW_REQUIRED` | Неоднозначность, конфликт, недостаточные доказательства или ошибка; не публиковать |
 
-Semantic relations (separate from actions): `SAME_RULE`, `NEW_RULE`, `NARROWS_SCOPE`, `ADDS_EXCEPTION`, `POTENTIAL_CONFLICT`, `RELATED_TOPIC`, `UNKNOWN`.
+Отдельные семантические отношения: `SAME_RULE`, `NEW_RULE`, `NARROWS_SCOPE`, `ADDS_EXCEPTION`, `POTENTIAL_CONFLICT`, `RELATED_TOPIC`, `UNKNOWN`. Действие не заменяет отношение.
 
-Stable IDs must not depend solely on editable titles. A quote hash alone does not prove legal equivalence. Exact JSON/Pydantic schema, ID format, and Markdown frontmatter are **not yet finalized**; agree them in the corresponding small implementation milestone.
+ID не должны зависеть только от изменяемого заголовка. Хеш цитаты не доказывает эквивалентность. Схема текущего извлечения определена; будущие схемы страниц/предложений, форматы стабильных ID и Markdown frontmatter ещё согласуются. Новые библиотеки валидации не подразумеваются.
 
-## 6. Resolution and consolidation
+## 6. Консолидация и ограниченный цикл проверки
 
-Resolve candidates in this order:
+Разрешать кандидатов последовательно: точные ID/источники/темы/алиасы; изменения уже в текущем пакете; затем qmd top-K опубликованных страниц с чтением полного содержимого. Создание возможно после проверки дублей. Неопределённость направлять на рассмотрение. qmd может отставать от текущего пакета.
 
-1. Stable IDs, source references, canonical topics, aliases.
-2. In-memory changes already proposed in the **current batch** (qmd may be stale).
-3. qmd retrieval of nearby published Wiki pages (when integrated), followed by loading the full candidate contents.
-4. Propose creation only after checking for duplicate IDs/topics; uncertainty goes to review.
+LLM не выбирает файловые пути и не публикует: она возвращает типизированное предложение, проверяемое прикладным кодом. Сходство эмбеддингов не разрешает объединять нормы без проверки условий, исключений, дат и юрисдикции.
 
-The LLM decides neither filesystem paths nor publication. It outputs a typed proposal, which application code validates. Do not merge similar rules merely by embedding similarity. Preserve exceptions, effective dates, jurisdiction, and the full original conditions.
+Планируемый процесс: Consolidator/Proposer → детерминированные проверки предложения → независимая LLM-проверка буквальной верности источнику и юридического смысла (при необходимости отдельная проверка согласованности) → структурированные замечания со ссылками на источник → исправленное предложение → полная повторная проверка. Число раундов ограничивается конфигурацией; отсутствие прогресса останавливает цикл. Неустранённые дефекты дают `REVIEW_REQUIRED`. Сходные оценки нескольких моделей не являются юридическим доказательством. Перед последовательной Git-публикацией обязателен явный человеческий/разрешительный барьер. Ни верификатор, ни этот цикл пока не реализованы.
 
-## 7. Provenance and legal safety
+## 7. Происхождение и доступ
 
-- A published claim must trace to a real source and exact quote; where revision/section identifiers do not exist, record that limitation rather than inventing values.
-- Verify the supplied quote against the appropriate source snapshot. An unverifiable claim cannot be auto-published as `verified`.
-- LLM output does not establish that two legal norms are equivalent, supersede one another, or apply on a particular date.
-- `needs_review`/`draft` content must not appear as approved legal fact. Promotion to `verified` requires a defined review process, outside initial PoC.
-- Original-source authorization and access controls must be preserved in any later integration; a Wiki link never grants permission to see a document.
+Каждое опубликованное утверждение должно вести к источнику и точной цитате; недоступные метаданные не выдумываются. Проверять цитату нужно по соответствующему снимку. Непроверяемое утверждение нельзя автоматически публиковать как `verified`. LLM не устанавливает, что нормы эквивалентны, заменяют друг друга или действуют в определённую дату.
 
-## 8. Git publication and index consistency (later milestone)
+`needs_review`/`draft` нельзя выдавать за одобренный юридический факт. Перевод в `verified` требует отдельно определённого процесса проверки, за пределами начального PoC. Доступ к оригиналам сохраняется: ссылка из Wiki не предоставляет разрешение читать документ.
 
-One writer processes approved batches sequentially. For each batch: check a clean/expected worktree; stage only its files; commit once; push without force; index that exact published snapshot; record progress.
+## 8. Git и согласованность индекса — позже
 
-A local Git commit, remote push, and qmd indexing are **not one transaction**. Track a published commit identity separately from indexed commit identity. A retry after commit or push must resume, not duplicate already-applied claims or commits; unexpected remote changes require an explicit stop/reconciliation. Never conflate Git Markdown history with effective versions of legal acts.
+Один писатель последовательно обрабатывает одобренные пакеты: проверяет ожидаемое/чистое дерево, добавляет только файлы пакета, создаёт один коммит, выполняет push без force, индексирует точный опубликованный снимок, сохраняет прогресс.
 
-For the initial CLI, `--dry-run` must not mutate published Wiki files or perform commit/push/index operations. It may create an **untracked local report outside the Wiki** only if explicitly requested, and should otherwise print proposals to stdout.
+Локальный коммит, push и индексация — не одна транзакция. Различать опубликованный Git SHA и проиндексированный SHA. Повтор после частичного сбоя продолжает работу без повторного добавления утверждений/коммитов; неожиданные удалённые изменения требуют остановки и согласования. История Wiki не равна юридическим редакциям актов. Всё это будущий дизайн, сейчас Git не вызывается. Текущий `--dry-run` только печатает результат; отдельный локальный отчёт вне Wiki возможен лишь по явному запросу, сейчас сохранения нет.
 
-## 9. External integration boundaries
+## 9. Внешние границы и оценка
 
-`ai-assistant` is a separate codebase and stays unchanged until the offline comparison. A future adapter would map Wiki hits back to authorized, original `document_id` plus specific provision/revision when available, rather than answering from the Wiki summary alone. Elasticsearch scores, pgvector similarity, and qmd scores are not directly interchangeable.
+Будущий адаптер сопоставит Wiki с разрешённым оригинальным `document_id` и конкретным положением/редакцией, если известны. Ответы не должны опираться лишь на пересказ Wiki. Оценки Elasticsearch, pgvector и qmd напрямую несопоставимы.
 
-Before implementing read-only ingestion, inspect the **actual** `ai-assistant` source schema, importer, current branch, access controls, and available model endpoint. The existence of `documents`, `headers`, and `sections` in the inspected code does **not** confirm reliable source revision IDs or legal paragraph identities in deployed data.
+До адаптера проверить фактическую ветку, схему, импортёр, права и доступный endpoint `ai-assistant`. Названия `documents`, `headers`, `sections` в ранее изученном коде не доказывают наличие надёжных редакций и правовых пунктов в развёрнутых данных. Исходную БД не изменять.
 
-## 10. Decisions and questions
+Сравнивать исходный поиск ES/pgvector с Wiki-assisted retrieval к **разрешённым оригинальным положениям**, на фиксированных снимках и независимо проверенных вопросах: Recall@K, Precision@K, ошибки, задержка, стоимость. Отдельно оценивать эффект пересказов и междокументной консолидации. Онлайн-интеграция — только после доказательств и одобрения.
 
-**Agreed:** Python; offline-first incremental PoC; Markdown + Git published Wiki; one writer; qmd for Wiki search; Obsidian optional; existing RAG preserved; constrained LLM proposals; review-on-uncertainty.
+## 10. Решения и неизвестное
 
-**Not yet confirmed:** actual DB source/revision contract, whether allowed corp source data can be used, local LLM capabilities and JSON mode, qmd/runtime availability and Russian legal retrieval quality, canonical claim/page schema, reviewer ownership, production integration conditions.
+Согласовано: Python, автономный поэтапный PoC, отдельная Markdown/Git Wiki, один писатель, qmd для поиска Wiki, необязательный Obsidian, сохранение существующего RAG, ограниченные предложения LLM, рассмотрение при неопределённости.
 
-Do not turn unresolved questions into implicit implementation assumptions.
+Исторические операторские пробы подтвердили приём JSON-режима наблюдавшимся llama.cpp с рекламируемым GPT-OSS 120B; подробности и ограничения в README. Это не гарантия другого развёртывания. Сообщённый рабочий контекст 50 176 токенов конечен; точность цитат и самостоятельность `statement` нестабильны, даже технический PASS не доказывает смысловую полноту.
+
+Не подтверждены: подлинность/официальность/актуальность KYT, его проверенная редакция и даты действия, права на публикацию и конкретную модельную обработку; реальный контракт БД/редакций, доступность и качество qmd, будущая схема страниц, ответственность проверяющих и условия промышленной интеграции. Не превращать эти вопросы в неявные предположения.

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools==68.1.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-wiki-memory"
+version = "0.1.0"
+description = "Предпросмотр извлечения атомарных утверждений без записи Wiki"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools]
+packages = ["llm_wiki"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+llm_wiki = ["prompts/legal_extraction_ru.txt"]

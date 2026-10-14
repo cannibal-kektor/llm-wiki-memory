@@ -1,97 +1,77 @@
-# LLM Wiki Memory — Incremental Implementation Plan
+# LLM Wiki Memory — поэтапный план
 
-**Status:** proposed implementation sequence. Nothing below is marked implemented solely because it appears in this plan.
-**Delivery rule:** one small milestone per approved change. Report real verification, including anything not verified.
-**Testing decision:** automated test authoring is deferred until the owner explicitly asks for it. Use non-destructive manual CLI/syntax checks in the meantime.
+**Правило:** один небольшой согласованный этап за изменение. Отчитываться о реальных проверках и непроверенных свойствах. Автоматизированные тесты/фреймворк/CI отложены до явного запроса владельца; пока использовать неразрушающие ручные проверки CLI и синтаксиса.
 
-## Milestone 0 — Documentation and repository hygiene (now)
+## Этап 0 — документация и гигиена репозитория
 
-**Goal:** establish a stable project contract for Claude Code/Codex without introducing application code.
+Базовые инструкции `AGENTS.md`, импортирующий их `CLAUDE.md`, архитектура, план, README и исключения редактора/окружений/секретов/рабочих данных существуют. Документация должна соответствовать рабочему дереву, а неизвестные внешние контракты оставаться неизвестными. Наличие файла в индексе не означает разрешения публиковать юридический текст.
 
-Deliver:
-- Root `AGENTS.md` (shared instructions), `CLAUDE.md` (imports `AGENTS.md`).
-- `docs/ARCHITECTURE.md` and this plan; a short README linking to them.
-- Check `.gitignore` for editor files, venvs, credentials, and local corpus/runtime artifacts before creating those artifacts.
+## Этап 1 — текущая реализация: один разрешённый TXT
 
-Done when: docs agree with the handoff and repository reality; unresolved external contracts are labeled unverified. No code, new dependencies, or infrastructure needed.
+Реализовано: Python CLI, неизменяемые записи источника/кандидатов, один явно настроенный локальный Chat Completions запрос, строгий JSON, проверка ID/дословных цитат/уточнений и предпросмотр. Выход 0 — технические проверки пройдены, 1 — отказ обработки/валидации, 2 — ошибка CLI. Нет записи Wiki или сохранения кандидатов. Предыдущий рефакторинг границ `domain.py`/`validation.py` сохраняется.
 
-## Milestone 1 — First vertical slice: one synthetic document
+Текущее изменение до первого коммита:
 
-**Goal:** show source-grounded atomic claims and a *proposal preview*, without writing Wiki files or Git commits.
+- Полный UTF-8 TXT до 65 536 байт; обязательные `--approved-source --dry-run` вместо допуска только для вымышленного текста. Путь и ID задаёт оператор; SHA-256 исходных байтов и смещения Unicode не меняют контракт.
+- Локальный `text/010_treb_KYT_Provider.txt` — реальный юридический материал. Чтение для локальной проверки разрешено задачей; POST конкретному сервису и публикация требуют отдельных оснований. Локальный `001_to_be_resident.txt` не использовать для извлечения и не изменять. Оба TXT исключены из индекса; `text/` игнорируется и не поставляется с кодом. Для нового клона оператор предоставляет собственный разрешённый документ.
+- Промпт `llm_wiki/prompts/legal_extraction_ru.txt` как UTF-8 ресурс исходного/установленного пакета. Схема и лимиты подставляются из Python; неправильный шаблон останавливается до HTTP. Без нового эксперимента настройки промпта.
+- Русские сообщения и поддерживаемые документы; стабильные API/JSON/CLI-имена не переводятся. Старый демонстрационный файл удалён и исключён из индекса. В кандидат первого коммита включаются только явно проверенные код, промпт и документы проекта.
+- Видимые ограничения: 32 кандидата, отсутствие гарантии полного охвата, технический PASS не подтверждает юридический смысл. Все кандидаты НЕПРОВЕРЕННЫЕ. Логи терминала могут содержать текст.
 
-Deliver only as needed:
-- A minimal Python project/CLI and dependency manifest, chosen for the actually available Python version.
-- One explicitly fictional Russian-language legal-like document as a local fixture.
-- Small validated data models for available source identity, atomic claims, direct source quotes, and proposal actions.
-- A thin, configurable client for an **approved local** OpenAI-compatible LLM endpoint; no coupling to `ai-assistant` users/billing/DB.
-- Extractor that requests structured atomic claims (not only document summaries).
-- Deterministic quote/source validation and an inspectable `--dry-run` preview. Invalid output fails closed.
+Ручная приёмка: compileall/help/diff checks; чтение KYT и SHA-256 без изменения байтов; отказ до HTTP для неверных аргументов, источника, конфигурации и промпта; сборка/установка wheel без скачивания зависимостей; временный безвредный текст и HTTP-стаб для правильного ответа, неверной цитаты, уточнения и source ID; отказ всего пакета при одном дефекте. Проверить соответствие индекса согласованному списку файлов, неизменность оригиналов и отсутствие записи Wiki. Не добавлять постоянные тестовые файлы.
 
-Acceptance (manual): CLI processes the fixture, shows claims linked to exact source text and a readable proposal; a nonmatching quotation is rejected; the published Wiki is untouched. Record commands run, output, and missing checks.
+Реальная проба — не обязательное условие завершения кода. Только после подтверждения разрешения на конкретный KYT для конкретного сервиса (хранение/логи/транспорт/нагрузка) — максимум один последовательный запрос. Иначе оставить операторскую команду из README. Лимиты не увеличивать; тайм-аут не считать автоматически дефектом программы. Смысл проверять отдельно: исключения, даты, территория, круг лиц, отсылки и неполнота.
 
-Do **not** implement qmd, Git writer, online API, or a comprehensive package hierarchy here.
+Исторические пробы вымышленного текста и операторские эксперименты: JSON-режим работал на наблюдавшемся llama.cpp, рекламировавшем GPT-OSS 120B; сообщённый рабочий контекст 50 176 токенов. Цитаты/уточнения иногда менялись на одну букву, `statement` терял ограничения даже при техническом PASS. Настройки промпта не дали гарантии устойчивой точности; длительность и тайм-ауты менялись. Это не юридический бенчмарк и не подтверждение успешной текущей KYT-пробы.
 
-## Milestone 2 — Knowledge Consolidation
+В этом изменении не реализуются: PDF/DOCX, юридический парсер, чанки/выбор строк, пакет документов, граф ссылок, Context Builder, новые evidence ID, верификатор LLM, консолидация, Markdown, Git writer, qmd, API/БД и новые зависимости.
 
-**Goal:** resolve where claims belong and generate constrained updates without mutating canonical Wiki.
+## Следующее улучшение доказательств — отдельное согласование контракта
 
-- Add a minimal current-batch state and existing-page candidate interface (in-memory/static first).
-- Add a typed consolidator action and independent semantic relation.
-- Separate actual source-ID deduplication from semantic equivalence checks.
-- Stage proposals with explicit `REVIEW_REQUIRED` on ambiguity/conflicts.
-- Produce a deterministic preview of proposed page changes; reject bad IDs, broken references, unverified quotes, and illegal paths.
+LLM должна указывать заранее присвоенные структурные evidence ID, Python — разрешать их в точные исходные фрагменты. Несколько положений для одного утверждения требуют явного изменения контракта. Существование evidence не доказывает правильность юридической интерпретации. Сейчас не реализовано; не подменять этим действующий контракт непрерывной цитаты.
 
-Acceptance (manual): demonstrate `CREATE_PAGE`, `UPDATE_PAGE`, `ADD_SOURCE`, `NO_CHANGE`, `REVIEW_REQUIRED` with synthetic examples. Two claims in one batch must see each other's staged state; repeating identical input must not produce new changes.
+## Этап 2 — Knowledge Consolidation
 
-## Milestone 3 — Markdown Wiki and local Git publication
+Цель: разрешать кандидатов в страницы и предлагать ограниченные изменения без записи канонической Wiki.
 
-**Goal:** publish only validated/approved changes, with clear recovery semantics.
+- Минимальное состояние текущего пакета и интерфейс существующих страниц, сначала в памяти/статически.
+- Поиск по ID/алиасам, изменениям текущего пакета, впоследствии qmd. Разделять дедупликацию источника и семантическую эквивалентность.
+- Типизированные действия `CREATE_PAGE`, `UPDATE_PAGE`, `ADD_SOURCE`, `NO_CHANGE`, `REVIEW_REQUIRED` отдельно от `SAME_RULE`, `NEW_RULE`, `NARROWS_SCOPE`, `ADDS_EXCEPTION`, `POTENTIAL_CONFLICT`, `RELATED_TOPIC`, `UNKNOWN`.
+- Детерминированный предпросмотр; проверка происхождения, области действия, ID, ссылок и безопасных путей. Конфликты/неопределённость — на рассмотрение.
+- Согласовать и реализовать ограниченный цикл: Consolidator/Proposer → детерминированные проверки → независимый LLM-верификатор буквальной верности и юридического смысла, при необходимости проверка согласованности → структурированные замечания по источнику → исправление → полная повторная проверка. Настраиваемый максимум раундов, остановка без прогресса, неустранённые дефекты → `REVIEW_REQUIRED`. Совпадение нескольких оценок модели не является юридическим доказательством.
 
-- Agree compact Markdown/frontmatter and stable claim/page identifier formats.
-- Implement a single sequential writer, review gate, safe path generation, and strict staging.
-- Start with a local **separate** Wiki Git repository; do not introduce a server unless needed.
-- Add an appropriately small durable journal/checkpoint for retries and idempotency.
-- Distinguish local commit, optional push, and later index stages.
+Приёмка: показать все действия на безвредных примерах; кандидаты учитывают изменения друг друга в пакете; повтор не создаёт новых изменений; неопределённость не публикуется. Эти интерфейсы и цикл пока отсутствуют.
 
-Acceptance (manual): approved batch yields one intended change/commit; repeat does nothing; simulated interruption is recoverable without duplicate writes; unreviewed results cannot publish as verified.
+## Этап 3 — Markdown Wiki и локальная Git-публикация
 
-## Milestone 4 — qmd search and index coordination
+Согласовать Markdown/frontmatter, стабильные ID, человеческий барьер одобрения, безопасные пути и строгий staging. Один последовательный писатель в отдельном локальном Wiki Git; сервер только при необходимости. Минимальный устойчивый журнал для идемпотентных повторов, отдельные стадии коммита, необязательного push и будущей индексации.
 
-**Goal:** use qmd to find candidate Wiki pages and record the published/indexed snapshot boundary.
+Приёмка: одобренный пакет даёт одно ожидаемое изменение/коммит; повтор ничего не меняет; прерывание восстанавливается без дублей; непроверенные результаты не становятся `verified` автоматически.
 
-- Confirm qmd version, local model/download policy, CLI output, and Russian-language retrieval behavior.
-- Integrate qmd candidate top-K search after exact and current-batch candidates.
-- Track published Git SHA versus indexed Git SHA; never silently serve an out-of-date index as current.
-- Obsidian remains optional and read-only relative to the canonical branch.
+## Этап 4 — qmd и согласование снимков
 
-Acceptance (manual): added/updated Wiki pages are retrievable after indexing; restart/re-index is repeatable; a stale index is observable. No Elasticsearch replacement.
+Проверить версию qmd, политику загрузки моделей, формат CLI и качество русского юридического поиска. Добавить top-K после точного поиска и текущего пакета. Различать опубликованный Git SHA и проиндексированный SHA; устаревание не скрывать. qmd восстанавливается из опубликованной Wiki, не заменяет канонический Git. Obsidian необязателен, просмотр относительно канонической ветки.
 
-## Milestone 5 — Real source adapter (read-only)
+Приёмка: новые страницы находятся после индексации; перезапуск/переиндексация повторяемы; отставание видно. Elasticsearch не заменяется.
 
-**Goal:** process a small explicitly approved subset of real documents, if authorized.
+## Этап 5 — адаптер источников только для чтения и большие документы
 
-- Verify relevant `ai-assistant` branch/revision and actual documents/headers/sections/revisions contracts.
-- Read source data through a narrow, permission-controlled, read-only adapter.
-- Preserve source identity and accessible citation offsets; mark missing revision/scope info unknown.
-- Confirm model endpoint, resource limits, logging/data residency, and rights to process documents.
+Проверить фактические ветку/ревизию `ai-assistant`, контракты documents/headers/sections/revisions и доступ. Узкий адаптер читает малое разрешённое подмножество; исходную БД не изменять. Отсутствующие редакции/область действия остаются неизвестными. Проверить endpoint, лимиты, логи, размещение данных и права обработки.
 
-Acceptance (manual): known permitted source can be traced back to exactly the available original; no writes to source DB, no unauthorised data copying, no invented revision IDs.
+Отдельно согласовать преобразование PDF/DOCX и юридическую иерархию: главы, статьи, пункты, подпункты; точные исходные позиции, проверяемая редакция, ссылки, определения, исключения. Context Builder выбирает связанные положения; проход понимания документа предшествует консолидации. Сейчас всё это только план, не причина вводить обрезку TXT.
 
-## Milestone 6 — Offline retrieval evaluation
+Приёмка: разрешённый источник прослеживается до доступного оригинала, без выдуманных редакций, копирования без разрешения и записи в БД. Небольшой разрешённый TXT этапа 1 не означает реализации адаптера корпуса.
 
-**Goal:** test the hypothesis before considering online integration.
+## Этап 6 — автономная оценка поиска
 
-- Freeze an approved source snapshot, Wiki Git SHA, prompts/model versions, and query set.
-- Build an independently reviewed set of questions and target **original** document provisions.
-- Compare existing ES+pgvector against Wiki-assisted retrieval using comparable `Recall@K`, `Precision@K`, error analysis, latency, and operational cost.
-- Separate gains from simple summaries from gains due to cross-document consolidation.
+Зафиксировать разрешённый снимок источников, Wiki SHA, версии промптов/моделей, вопросы и независимо проверенные целевые оригинальные положения. Сравнить ES+pgvector с поиском через Wiki к разрешённым оригиналам: Recall@K, Precision@K, ошибки, задержка, эксплуатационная стоимость. Разделять эффект простых пересказов и консолидации между документами.
 
-Acceptance: an inspectable report with actual measurements, limitations, and a go/no-go recommendation. No claims of improvements without measured evidence.
+Приёмка: проверяемый отчёт с измерениями, ограничениями и рекомендацией продолжать/остановиться. Улучшение формулировок ответа не заменяет измерение поиска.
 
-## Later (not part of approved PoC) — ai-assistant integration
+## Позже — интеграция ai-assistant
 
-Only after demonstrated value and explicit approval: add a feature-flagged, authorized lookup path in `ai-assistant`; map Wiki hits to original document provisions; preserve current task isolation and fallback behavior; evaluate end-to-end answer quality. No silent switch from original-source-based responses.
+Только после доказанной пользы и явного разрешения: отключаемый авторизованный поиск, сопоставление с оригиналами, сохранение изоляции задач и резервного поведения, оценка итоговых ответов. Не переключать незаметно ответы с первоисточников на Wiki.
 
-## Current next action
+## Текущее следующее действие
 
-Approve this documentation set, adjust any disputed architecture decisions, and incorporate it into the checked-out `master` branch. Then design **Milestone 1 only** before generating its implementation code.
+Проверить staged-снимок этапа 1 и представить его человеку для ревью перед коммитом. Реальные TXT и старая фикстура исключены; локальный `text/` игнорируется. Разрешение на реальный KYT POST остаётся отдельным условием необязательной проверки. Ветку не менять, коммит/push не выполнять в рамках подготовки. Дальнейшие контракты согласовать отдельным небольшим этапом.

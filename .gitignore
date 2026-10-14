@@ -2,7 +2,7 @@
 .idea/
 *.iml
 
-# Python
+# Артефакты Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -10,18 +10,27 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# Virtual environments
+# Виртуальные окружения
 .venv/
 venv/
 
-# Environment variables and secrets
+# Переменные окружения и секреты
 .env
 .env.*
 
-# Build artifacts
+# Результаты сборки
 build/
 dist/
 
-# OS
+# Частные входные данные и рабочие материалы (не хранить в публичных fixtures)
+corpora/
+runtime/
+drafts/
+reports/
+
+# Локальные юридические тексты для ручной проверки, не публиковать в репозитории кода
+text/
+
+# Операционная система
 .DS_Store
 Thumbs.db

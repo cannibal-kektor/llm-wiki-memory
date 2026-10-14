@@ -1,9 +1,9 @@
 @AGENTS.md
 
-# Claude Code — Project Notes
+# Claude Code — заметки проекта
 
-- Use `AGENTS.md` as the shared ruleset; do not duplicate or override it here.
-- Before a substantial implementation task, propose a small plan and wait for scope approval when it changes architecture or contracts.
-- Read `docs/ARCHITECTURE.md` when working on domain, storage, indexing, or external boundaries; read `docs/IMPLEMENTATION_PLAN.md` for milestone sequencing.
-- Keep modifications scoped to the requested milestone and show the actual commands/results used for manual verification.
-- Ask before changing the technology choices, publishing knowledge, accessing real legal data, or committing/pushing.
+- `AGENTS.md` — общие правила; не дублировать и не переопределять их здесь.
+- До существенной реализации предложить небольшой план; если задача меняет архитектуру или контракты за пределами уже согласованного объёма, дождаться согласования.
+- При работе с доменом, хранением, индексацией и внешними границами читать `docs/ARCHITECTURE.md`; порядок этапов — в `docs/IMPLEMENTATION_PLAN.md`.
+- Ограничивать изменения запрошенным этапом; показывать реальные команды и результаты ручной проверки.
+- До изменения технологий, публикации знаний, доступа к реальным юридическим данным, коммита или push получить разрешение, если оно ещё не дано для конкретного действия.

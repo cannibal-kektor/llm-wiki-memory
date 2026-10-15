@@ -1,4 +1,4 @@
-"""LE-3A: контракт будущего шага Claim Construction — промпт из ContextPackage и проверка ответа (без сети).
+"""LE-3A/LE-3B.1: контракт шага Claim Construction — промпт из ContextPackage и проверка ответа (без сети).
 
 Утверждение — новая формулировка, а не цитата: дословность не проверяется и не требуется. Проверяются
 только структура ответа и то, что каждая ссылка — существующий evidence ID пакета с той же ролью.
@@ -16,6 +16,7 @@ from .evidence import CONTEXT_COMPLETENESS, ROLES, Snapshot, text_of
 
 CLAIM_CONTRACT = "llm-wiki-memory/le3a-claim/v1"
 REQUEST_CONTRACT = "llm-wiki-memory/le3a-claim-request/v1"
+RESULT_CONTRACT = "llm-wiki-memory/le3b-claim-result/v1"
 MAX_CLAIMS = 8
 MAX_CLAIM_EVIDENCE = 12
 MAX_QUALIFIERS = 8
@@ -163,9 +164,13 @@ def _pairs(package: dict[str, Any]) -> list[tuple[dict[str, Any], str]]:
     return [(item["evidence"], item["role"]) for item in package["evidence"]]
 
 
-def check_response(text: str, snap: Snapshot, package: dict[str, Any],
-                   pairs: list[tuple[dict[str, Any], str]]) -> list[dict[str, Any]]:
-    """Строгая проверка ответа: любая ошибка структуры или ссылки отклоняет ответ целиком."""
+def validate_response(text: str, snap: Snapshot, package: dict[str, Any],
+                      pairs: list[tuple[dict[str, Any], str]]) -> list[dict[str, Any]]:
+    """Строгая проверка ответа целиком; записи возвращаются только если прошёл весь ответ.
+
+    Каждая запись: summary — прежняя сводка LE-3A (без текста), proposal — разобранный элемент ответа
+    модели без изменений. Любая ошибка структуры или ссылки отклоняет ответ целиком.
+    """
     if package["context_completeness"] != CONTEXT_COMPLETENESS:
         raise ClaimError("Пакет без признака неустановленной полноты не поддерживается")
     for record, _ in pairs:  # Каждое доказательство ещё раз воспроизводится из снимка.
@@ -180,8 +185,56 @@ def check_response(text: str, snap: Snapshot, package: dict[str, Any],
     if not isinstance(claims, list) or not 1 <= len(claims) <= MAX_CLAIMS:
         raise ClaimError(f"claims должен быть списком из 1–{MAX_CLAIMS} утверждений")
     roles = {record["evidence_id"]: role for record, role in pairs}
-    results = [_claim(item, index, package, snap, roles) for index, item in enumerate(claims, 1)]
+    entries = [{"summary": _claim(item, index, package, snap, roles), "proposal": item}
+               for index, item in enumerate(claims, 1)]
     # Только точные дубли (тот же candidate_id); различные формулировки не считаются эквивалентными.
-    if len({result["candidate_id"] for result in results}) != len(results):
+    if len({entry["summary"]["candidate_id"] for entry in entries}) != len(entries):
         raise ClaimError("Ответ содержит повторяющиеся утверждения (одинаковый candidate_id)")
-    return results
+    return entries
+
+
+def check_response(text: str, snap: Snapshot, package: dict[str, Any],
+                   pairs: list[tuple[dict[str, Any], str]]) -> list[dict[str, Any]]:
+    """Сводки LE-3A (без текста утверждений) после строгой проверки ответа целиком."""
+    return [entry["summary"] for entry in validate_response(text, snap, package, pairs)]
+
+
+def result_artifact(snap: Snapshot, package: dict[str, Any], entries: list[dict[str, Any]],
+                    binding: dict[str, Any]) -> dict[str, Any]:
+    """Полный частный результат принятых кандидатов (содержит текст утверждений модели).
+
+    proposal — исходное предложение модели без изменений; validation — выведено кодом. Текст доказательств
+    не встраивается: он вырезается из снимка по смещениям. Хеши привязки подтверждают совпадение
+    содержимого, но не аутентифицируют ответ и не являются решением рассмотрения.
+    """
+    evidence_by_id = {item["evidence"]["evidence_id"]: item for item in package["evidence"]}
+    records = []
+    for entry in entries:
+        summary, proposal = entry["summary"], entry["proposal"]
+        references = []
+        for reference in proposal["evidence"]:
+            item = evidence_by_id[reference["evidence_id"]]
+            record = item["evidence"]
+            references.append({"evidence_id": record["evidence_id"], "role": item["role"], "line_id": record["line_id"],
+                               "start": record["start"], "end": record["end"], "text_sha256": record["text_sha256"]})
+        records.append({
+            "candidate_id": summary["candidate_id"], "position": summary["position"], "proposal": proposal,
+            "validation": {
+                "evidence": references, "technical_verdicts": summary["verdicts"],
+                "unresolved_dependencies": summary["unresolved_dependencies"],
+                "package_dependencies_not_acknowledged": summary["package_dependencies_not_acknowledged"],
+                "context_completeness": summary["context_completeness"],
+                "legal_fidelity": "NOT_VERIFIED", "legal_status": "UNVERIFIED", "review_status": "REVIEW_REQUIRED",
+            },
+        })
+    return {
+        "contract": RESULT_CONTRACT, "status": "ACCEPTED_AS_CANDIDATES",
+        "binding": {"context_package_id": package["context_package_id"], "snapshot_id": snap.snapshot_id,
+                    "source_id": snap.source_id,
+                    "package_evidence_ids": [item["evidence"]["evidence_id"] for item in package["evidence"]],
+                    **binding},
+        "binding_limits": "Хеши подтверждают совпадение содержимого, а не подлинность ответа или одобрение пакета",
+        "claims": records,
+        "technical_acceptance_only": True, "legal_fidelity": "NOT_VERIFIED", "context_completeness": CONTEXT_COMPLETENESS,
+        "legal_status": "UNVERIFIED", "review_status": "REVIEW_REQUIRED",
+    }

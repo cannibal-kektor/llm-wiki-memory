@@ -1,9 +1,9 @@
-"""Предварительная правовая структура принятого снимка Docling: этапы 1.2a и 1.2a.1-A.
+"""Предварительная правовая структура принятого снимка Docling: этапы 1.2a, 1.2a.1-A и 1.2a.1-B.
 
 Без разбора оригинала, ссылок, LLM и юридической верификации. Ссылки и порядок
 относятся к снимку; кандидаты не задают границ полного нормативного положения.
-Границы и домены нумерации (1.2a.1-A) строятся в `boundaries`; иерархия по позиции
-и присоединение продолжений не выполняются.
+Границы и домены нумерации (1.2a.1-A) строятся в `boundaries`, консервативная иерархия
+(1.2a.1-B) — в `hierarchy`; присоединение продолжений (1.2a.1-C) не выполняется.
 """
 
 import argparse
@@ -22,17 +22,17 @@ import tempfile
 from typing import TYPE_CHECKING, Any, Literal
 import warnings
 
-from . import boundaries
-from .boundaries import CHAPTER, CONTENT_LABELS, StreamItem, article_match
+from . import boundaries, hierarchy
+from .boundaries import CONTENT_LABELS, StreamItem
 from .validation import validate_document_id
 
 if TYPE_CHECKING:
     from docling_core.types.doc import DoclingDocument
 
-SCHEMA = "llm-wiki-memory/legal-structure/v2"
-REPORT_SCHEMA = "llm-wiki-memory/structure-report/v2"
-# Политика включает буквы инкремента: 1.2a.1-B изменит правила и обязан сменить версию.
-POLICY = "legal-cues/1.2a.1-A-v2"
+SCHEMA = "llm-wiki-memory/legal-structure/v3"
+REPORT_SCHEMA = "llm-wiki-memory/structure-report/v3"
+# Политика включает буквы инкремента: смена правил границ/иерархии обязана сменить версию и ID.
+POLICY = "legal-cues/1.2a.1-B-v2"
 CORE_VERSION = "2.101.1"
 DOCLING_SCHEMA_VERSION = "1.10.0"
 NODE_LISTS = ("groups", "texts", "pictures", "tables", "key_value_items", "form_items",
@@ -62,7 +62,8 @@ CODES: dict[str, str] = {
     "isolated_chapter_marker": "изолированное «ГЛАВА N»",
     "article_marker_with_delimiter": "явное «Статья N» с разделителем",
     "root": "корень",
-    "docling_ancestry": "явная ancestry Docling; предварительная, не юридически проверенная связь",
+    "docling_ancestry": "явная ancestry Docling до единицы, согласованная с позиционной областью; "
+                        "предварительная, не юридически проверенная связь",
     "unknown_intermediate_node": "неизвестный промежуточный узел; родитель не определён",
     "unsupported_kind_pair": "родитель неизвестен или сочетание типов не поддерживается политикой",
     "unit_extent_unknown": "полная граница единицы не установлена",
@@ -86,13 +87,20 @@ CODES: dict[str, str] = {
 
 @dataclass(frozen=True)
 class LegalUnit:
+    """Якорь единицы. `numbered` — нейтральный технический вид набранного номера, не пункт/часть."""
+
     id: str
-    kind: Literal["document", "chapter", "article"]
+    kind: Literal["document", "chapter", "article", "numbered"]
     number: str | None
+    order: int | None
     source_refs: tuple[str, ...]
     parent_id: str | None
-    recognition: str
+    parent_status: hierarchy.Status
     parent_basis: str
+    parent_evidence: tuple[str, ...]
+    recognition: str
+    anchor_id: str | None
+    domain_id: str | None
     uncertainty: tuple[str, ...] = ()
 
 
@@ -263,8 +271,9 @@ def load_snapshot(snapshot: Path, report_path: Path) -> tuple["DoclingDocument",
 
 
 def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[str, Any]:
-    """Единицы 1.2a, границы и домены 1.2a.1-A; порядок — body, затем отдельно furniture."""
-    from docling_core.types.doc import ContentLayer, DocItem, GroupItem, InlineGroup, TextItem
+    """Единицы 1.2a, границы и домены 1.2a.1-A, иерархия 1.2a.1-B; порядок — body, затем furniture."""
+    from docling_core.types.doc import (ContentLayer, DocItem, GroupItem, InlineGroup, PictureItem, TableItem,
+                                        TextItem)
 
     ordered = [item for root in (document.body, document.furniture)
                for item, _ in document.iterate_items(
@@ -288,9 +297,26 @@ def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[s
             result.append(item)
         return result
 
+    def inner(item: Any) -> hierarchy.Inner:
+        """Проверить всё поддерево stop_only-элемента; изображение и иной DocItem не проверяемы по тексту."""
+        texts: list[str] = []
+        pending = [item]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, PictureItem) or (isinstance(node, DocItem)
+                                                 and not isinstance(node, (TextItem, TableItem))):
+                return "uninspectable"
+            if isinstance(node, TextItem):
+                texts.append(node.text)
+            if isinstance(node, TableItem):
+                texts.extend(cell.text for cell in node.data.table_cells)
+            pending.extend(nodes[child.cref] for child in node.children)
+        return hierarchy.classify_inner(texts)
+
     root_id = unit_id("#/body")
-    units = [LegalUnit(root_id, "document", None, ("#/body",), None, "snapshot_container", "root")]
     unit_by_ref = {"#/body": root_id}
+    # Якоря глав/статей 1.2a (+ варианты N-M) и их ancestry по дереву Docling.
+    drafts: list[tuple[str, str, str, str, tuple[str, ...], str | None, str, int]] = []
     blocks: dict[str, BlockAccounting] = {}
     for item in ordered:
         ref = item.self_ref
@@ -303,6 +329,7 @@ def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[s
     # Поток body в порядке обхода: один элемент на логический текст; таблица/изображение —
     # один непрозрачный элемент без потомков; furniture в поток не входит.
     stream: list[StreamItem] = []
+    inner_by_order: dict[int, hierarchy.Inner] = {}
     consumed: set[str] = set()
     for order, item in enumerate(ordered):
         ref = item.self_ref
@@ -319,6 +346,7 @@ def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[s
                 blocks[ref].reason = "furniture_or_other_layer"
             if not in_furniture and not isinstance(item, GroupItem):
                 stream.append(StreamItem(order, (ref,), "other_layer", item.label.value))
+                inner_by_order[order] = inner(item)
             continue
         refs = [ref]
         if isinstance(item, InlineGroup):
@@ -327,6 +355,7 @@ def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[s
                 blocks[ref].reason = "complex_inline_group"
                 consumed.update(c.self_ref for c in children)
                 stream.append(StreamItem(order, (ref,), "unsupported", item.label.value))
+                inner_by_order[order] = inner(item)
                 continue
             refs.extend(c.self_ref for c in children)
             consumed.update(refs[1:])
@@ -340,6 +369,7 @@ def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[s
         else:
             if isinstance(item, DocItem):
                 stream.append(StreamItem(order, (ref,), "opaque", item.label.value))
+                inner_by_order[order] = inner(item)
             continue
         # Только представление для распознавания: исходные строки не меняются/не копируются.
         cue = re.sub(r"\s+", " ", text).strip()
@@ -347,22 +377,21 @@ def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[s
             continue
         if item.label.value not in CONTENT_LABELS:
             stream.append(StreamItem(order, tuple(refs), "other_label", item.label.value))
+            inner_by_order[order] = inner(item)
             for source_ref in refs:
                 if blocks[source_ref].status == "unresolved":
                     blocks[source_ref].reason = "other_label_content"
             continue
         stream.append(StreamItem(order, tuple(refs), "content", item.label.value, cue,
                                  bool(getattr(item, "enumerated", False))))
-        chapter = CHAPTER.fullmatch(cue)
-        article = article_match(cue)
-        match = chapter or article
-        if not match:
+        marker = hierarchy.unit_marker(cue)
+        if marker is None:
             for source_ref in refs:
                 if blocks[source_ref].status == "unresolved":
                     blocks[source_ref].reason = "no_supported_marker"
             continue
-        kind = "chapter" if chapter else "article"
-        # Не пропускать нераспознанный heading/текст при поиске родителя.
+        kind, number, recognition = marker
+        # Ancestry 1.2a: не пропускать нераспознанный heading/текст при поиске родителя.
         parent_id = None
         parent_basis = "unknown_intermediate_node"
         for ancestor in chain:
@@ -372,32 +401,67 @@ def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[s
                 break
             if not isinstance(ancestor, GroupItem):
                 break
-        parent_kind = next((u.kind for u in units if u.id == parent_id), None)
-        if parent_kind not in ({"document"} if kind == "chapter" else {"document", "chapter"}):
+        parent_kind = "document" if parent_id == root_id else next(
+            (d[1] for d in drafts if unit_id(d[0]) == parent_id), None)
+        if parent_id is not None and parent_kind not in (
+                {"document"} if kind == "chapter" else {"document", "chapter"}):
             parent_id = None
             parent_basis = "unsupported_kind_pair"
-        current_id = unit_id(ref)
-        units.append(LegalUnit(current_id, kind, match.group(1), tuple(refs), parent_id,
-                               "isolated_chapter_marker" if chapter else "article_marker_with_delimiter",
-                               parent_basis, ("unit_extent_unknown",)
-                               + (("parent_unknown",) if parent_id is None else ())))
+        drafts.append((ref, kind, number, recognition, tuple(refs), parent_id, parent_basis, order))
         for source_ref in refs:
-            unit_by_ref[source_ref] = current_id
-            blocks[source_ref].status = "assigned"
-            blocks[source_ref].unit_id = current_id
-            blocks[source_ref].reason = "unit_anchor"
+            unit_by_ref[source_ref] = unit_id(ref)
 
     found = boundaries.analyze(stream, make_id)
-    # Маркер внутри предполагаемой цитаты не подавляется, но единица получает неопределённость.
-    quoted_by_ref = {b.source_refs[0]: b.quoted_context for b in found["boundaries"]
-                     if b.category in {"chapter", "article"} and b.quoted_context != "none"}
-    repeated = Counter((u.parent_id, u.kind, u.number) for u in units if u.number is not None)
-    units = [replace(u, uncertainty=(
-                 *u.uncertainty,
-                 *(("duplicate_designation_in_parent",) if u.number is not None
-                   and repeated[(u.parent_id, u.kind, u.number)] > 1 else ()),
-                 *((f"quoted_context_{quoted_by_ref[u.source_refs[0]]}",)
-                   if u.source_refs[0] in quoted_by_ref else ())))
+    domain_at = [(d.start_order, d.end_order, d) for d in found["numbering_domains"]]
+
+    def domain_of(order: int) -> boundaries.NumberingDomain:
+        return next(d for start, end, d in domain_at if start <= order <= end)
+
+    anchor_of = {b.source_refs[0]: b for b in found["boundaries"]
+                 if b.category in {"chapter", "chapter_variant", "article", "article_variant"}}
+    candidates: list[hierarchy.Candidate] = []
+    for ref, kind, number, _, refs, parent_id, parent_basis, order in drafts:
+        boundary = anchor_of.get(ref)
+        if boundary is None:
+            raise StructureError("Якорь единицы без своей границы; результат не принят")
+        candidates.append(hierarchy.Candidate(unit_id(ref), kind, number, order, refs, boundary.id,
+                                              domain_of(order).id, boundary.quoted_context,
+                                              parent_id, parent_basis))
+    recognitions = {unit_id(d[0]): d[3] for d in drafts}
+    # Только номера, набранные в тексте снимка; номера списков Docling единиц не дают.
+    for marker in found["numbering_markers"]:
+        if marker.verification == "typed_in_snapshot_text":
+            candidates.append(hierarchy.Candidate(
+                unit_id(marker.source_refs[0]), "numbered", marker.designation, marker.order, marker.source_refs,
+                marker.id, marker.domain_id, marker.quoted_context, level=marker.level, sequence=marker.sequence))
+            recognitions[unit_id(marker.source_refs[0])] = marker.form
+    candidates.sort(key=lambda c: c.order)
+    container = {item.self_ref: item.parent.cref for item in ordered if item.parent}
+    try:
+        placements = hierarchy.place(candidates, root_id, found["boundaries"], found["numbering_markers"],
+                                     found["numbering_domains"], inner_by_order, container)
+    except ValueError:
+        raise StructureError("Внутреннее состояние иерархии некорректно; результат не принят") from None
+    units = [LegalUnit(root_id, "document", None, None, ("#/body",), None, "root", "root", (),
+                       "snapshot_container", None, None)]
+    for candidate in candidates:
+        placement = placements[candidate.id]
+        units.append(LegalUnit(
+            candidate.id, candidate.kind, candidate.number, candidate.order, candidate.source_refs,
+            placement.parent_id, placement.parent_status, placement.parent_basis, placement.parent_evidence,
+            recognitions[candidate.id], candidate.anchor_id, candidate.domain_id,
+            ("unit_extent_unknown",)
+            + (("parent_unknown",) if placement.parent_id is None else ())
+            + (("crossed_inspected_barrier",) if placement.crossed_barrier else ())
+            + ((f"quoted_context_{candidate.quoted_context}",) if candidate.quoted_context != "none" else ())))
+        for source_ref in candidate.source_refs:
+            blocks[source_ref].status = "assigned"
+            blocks[source_ref].unit_id = candidate.id
+            blocks[source_ref].reason = "unit_anchor"
+    # Повтор обозначения считается только среди установленных родителей: «неизвестен» — не контекст.
+    repeated = Counter((u.parent_id, u.kind, u.number) for u in units if u.parent_id is not None)
+    units = [replace(u, uncertainty=(*u.uncertainty, "duplicate_designation_in_parent"))
+             if u.parent_id is not None and repeated[(u.parent_id, u.kind, u.number)] > 1 else u
              for u in units]
     for kind, records in (("boundary_marker_only", found["boundaries"]), ("numbering_marker_only",
                                                                          found["numbering_markers"])):
@@ -428,16 +492,16 @@ def recognize(document: "DoclingDocument", identity: SnapshotIdentity) -> dict[s
         "quoted_spans": [asdict(span) for span in found["quoted_spans"]],
         "numbering_domains": [asdict(domain) for domain in found["numbering_domains"]],
         "observations": {"title_after_heading_not_boundary": found["stats"]["after_heading_not_boundary"]},
-        "codes": dict(sorted({**CODES, **boundaries.CODES}.items())),
+        "codes": dict(sorted({**CODES, **boundaries.CODES, **hierarchy.CODES}.items())),
     }
     _check_invariants(result, [item.order for item in stream])
     return result
 
 
 def _check_invariants(result: dict[str, Any], stream_orders: list[int]) -> None:
-    """Внутренние инварианты v2: при нарушении результат не принимается (fail closed)."""
+    """Внутренние инварианты v3: при нарушении результат не принимается (fail closed)."""
     codes = result["codes"]
-    used = [u[key] for u in result["units"] for key in ("recognition", "parent_basis")]
+    used = [u[key] for u in result["units"] for key in ("recognition", "parent_basis", "parent_status")]
     used += [code for u in result["units"] for code in u["uncertainty"]]
     used += [b["reason"] for b in (*result["blocks"], *result["table_cells"])]
     used += [b[key] for b in result["boundaries"]
@@ -472,6 +536,53 @@ def _check_invariants(result: dict[str, Any], stream_orders: list[int]) -> None:
             or any(block["status"] == "assigned" and block["reason"] not in {"unit_anchor", "snapshot_container"}
                    for block in result["blocks"])):
         raise StructureError("Нарушен инвариант границ, доменов или учёта блоков; результат не принят")
+    _check_hierarchy(result)
+
+
+# Допустимые пары «родитель → единица»: структурные и номерные (1.2a.1-B).
+PARENT_KINDS = frozenset({("document", "chapter"), ("document", "article"), ("chapter", "article"),
+                          ("article", "numbered"), ("numbered", "numbered")})
+
+
+def _check_hierarchy(result: dict[str, Any]) -> None:
+    """Родители: существуют, допустимы по видам, раньше по потоку (ацикличность), номер → номер — в
+    одном домене с точным префиксом, статья → номер — домен открыт этой статьёй; доказательства и
+    якоря ссылаются на существующие записи; каждый адрес — якорь не более одной единицы."""
+    units = {u["id"]: u for u in result["units"]}
+    domains = {d["id"]: d for d in result["numbering_domains"]}
+    anchors = {r["id"]: r for key in ("boundaries", "numbering_markers") for r in result[key]}
+    known = {*units, *domains, *anchors}
+    refs = [ref for u in result["units"] for ref in u["source_refs"]]
+
+    def broken(unit: dict[str, Any]) -> bool:
+        if unit["kind"] == "document":
+            return (unit["parent_id"] is not None or unit["parent_status"] != "root" or unit["order"] is not None
+                    or list(unit["source_refs"]) != ["#/body"])
+        anchor = anchors.get(unit["anchor_id"])
+        domain = domains.get(unit["domain_id"])
+        parent = units.get(unit["parent_id"]) if unit["parent_id"] is not None else None
+        if (anchor is None or list(anchor["source_refs"]) != list(unit["source_refs"])
+                or domain is None or not domain["start_order"] <= unit["order"] <= domain["end_order"]
+                or any(record not in known for record in unit["parent_evidence"])
+                or unit["parent_status"] != ("review_required" if unit["parent_id"] is None else "resolved")
+                or (unit["parent_id"] is not None and parent is None)):
+            return True
+        if parent is None:
+            return False
+        if ((parent["kind"], unit["kind"]) not in PARENT_KINDS
+                or (parent["order"] is not None and parent["order"] >= unit["order"])):
+            return True
+        if parent["kind"] == "numbered":
+            return (parent["domain_id"] != unit["domain_id"]
+                    or parent["number"] != unit["number"].rsplit(".", 1)[0] or "." not in unit["number"])
+        if unit["kind"] == "numbered":
+            return "." in unit["number"] or domain["opened_by"] != parent["anchor_id"]
+        return False
+
+    if (len(refs) != len(set(refs)) or result["units"][0]["kind"] != "document"
+            or sum(u["kind"] == "document" for u in result["units"]) != 1
+            or any(broken(unit) for unit in result["units"])):
+        raise StructureError("Нарушен инвариант иерархии единиц; результат не принят")
 
 
 def _output_directory(path: Path, names: tuple[str, str]) -> Path:
@@ -527,8 +638,9 @@ class _Parser(argparse.ArgumentParser):
 def main(argv: list[str] | None = None) -> int:
     parser = _Parser(prog="python -m llm_wiki.structure", add_help=False,
                      description="Предварительная структура принятого Docling JSON: единицы 1.2a, "
-                     "границы и домены нумерации 1.2a.1-A (контракт legal-structure/v2). Без иерархии "
-                     "по позиции, оригинала, LLM и юридической проверки; текст в терминал не выводится.")
+                     "границы и домены нумерации 1.2a.1-A, консервативная иерархия 1.2a.1-B (контракт "
+                     "legal-structure/v3). Без присоединения абзацев, оригинала, LLM и юридической проверки; "
+                     "текст в терминал не выводится.")
     parser._positionals.title = "Позиционные аргументы"
     parser._optionals.title = "Параметры"
     parser.add_argument("-h", "--help", action="help", help="показать справку")
@@ -559,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
             "structure_file": names[0], "structure_sha256": _digest(payload),
             "counts": {
                 "units": count("units", "kind"),
+                "unit_parents": count("units", "kind", "parent_status", "parent_basis"),
                 "nodes": count("blocks", "status"),
                 "table_cells": count("table_cells", "status"),
                 "boundaries": count("boundaries", "category", "effect", "confidence"),
@@ -572,7 +685,8 @@ def main(argv: list[str] | None = None) -> int:
             "analysis_warnings": len(analysis_warnings),
             "limits": ["Кандидаты и ancestry предварительны; нормативная полнота не установлена.",
                        "Границы и домены — интервалы потока снимка, не правовые единицы и не их содержание.",
-                       "Нет иерархии по позиции, присоединения абзацев, разбора пунктов, ссылок и определений.",
+                       "Иерархия предварительна: неизвестный родитель остаётся неизвестным; вид номера "
+                       "(пункт/часть) не установлен; нет присоединения абзацев, ссылок и определений.",
                        "Номера вычисленного ListItem.marker не проверены и не используются.",
                        "Подписи/реквизиты не распознаются; цитаты определяются эвристически.",
                        "Порядок body и отдельно furniture — порядок снимка, не проверка оригинала.",
@@ -583,7 +697,9 @@ def main(argv: list[str] | None = None) -> int:
         # Отчёт пишется последним: без него пара артефактов не считается завершённой.
         _write_new(directory, names[1], _json_bytes(report))
         print("Предварительная структура записана; требуется ручное рассмотрение.")
-        print(f"Кандидатов: {len(structure['units'])}; узлов: {len(structure['blocks'])}; "
+        statuses = Counter(unit["parent_status"] for unit in structure["units"])
+        print(f"Кандидатов: {len(structure['units'])} (родитель установлен: {statuses['resolved']}, "
+              f"на рассмотрение: {statuses['review_required']}); узлов: {len(structure['blocks'])}; "
               f"неразрешённых узлов: {report['counts']['nodes'].get('unresolved', 0)}; "
               f"границ: {len(structure['boundaries'])}; доменов нумерации: "
               f"{len(structure['numbering_domains'])}.")
